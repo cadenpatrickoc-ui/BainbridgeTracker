@@ -1,40 +1,7 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Bainbridge Island Tracker</title>
-
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<style>
-html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;}
-#map{position:absolute;inset:0;}
-#topbar{position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:1000;
-  background:rgba(255,255,255,0.95);border-radius:10px;box-shadow:0 6px 18px rgba(0,0,0,0.12);
-  padding:10px 14px;display:flex;gap:12px;align-items:center;min-width:260px;}
-#teamLabel{font-weight:700;font-size:16px;padding:6px 10px;border-radius:8px;color:#fff;}
-.blue{background:#0b69ff;} .red{background:#dc3b3b;}
-#status{font-size:13px;color:#333;opacity:0.9;}
-.notify{position:absolute;left:50%;transform:translateX(-50%);bottom:18px;z-index:1000;
-  background:rgba(0,0,0,0.75);color:#fff;padding:8px 12px;border-radius:8px;font-weight:600;display:none;}
-</style>
-</head>
-<body>
-<div id="topbar">
-  <div id="teamLabel" class="blue">You are on the BLUE side</div>
-  <div id="status">Waiting for location…</div>
-</div>
-<div id="map"></div>
-<div class="notify" id="notify">Crossed the line — now on <span id="notifySide"></span> side</div>
-
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
-<audio id="beep" preload="auto">
-  <source src="https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg" type="audio/ogg">
-</audio>
-
 <script>
-const DIVIDING_LAT = 47.629536;
+const DIVIDING_LAT = 47.629536;        // Original blue/red line
+const OUT_OF_BOUNDS_LAT = 47.6796281;  // NE Day Rd W line
+
 const map = L.map('map');
 
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
@@ -42,7 +9,11 @@ L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
   attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
 }).addTo(map);
 
-L.polyline([[DIVIDING_LAT,-180],[DIVIDING_LAT,180]],{color:'#222',weight:3,dashArray:'8 6'}).addTo(map);
+// Blue/Red dividing line
+L.polyline([[DIVIDING_LAT,-180],[DIVIDING_LAT,180]], {color:'#222', weight:3, dashArray:'8 6'}).addTo(map);
+
+// Out-of-bounds line
+L.polyline([[OUT_OF_BOUNDS_LAT,-180],[OUT_OF_BOUNDS_LAT,180]], {color:'#555', weight:2, dashArray:'6 4'}).addTo(map);
 
 const teamLabel=document.getElementById('teamLabel');
 const statusEl=document.getElementById('status');
@@ -50,76 +21,107 @@ const notify=document.getElementById('notify');
 const notifySide=document.getElementById('notifySide');
 const beep=document.getElementById('beep');
 
-let marker=null,accuracyCircle=null,lastSide=null,lastNotifyAt=0;
+let marker=null, accuracyCircle=null, lastSide=null, lastNotifyAt=0;
 
 function setTeamUI(isNorth){
-  if(isNorth){teamLabel.textContent='You are on the BLUE side';teamLabel.className='blue';}
-  else{teamLabel.textContent='You are on the RED side';teamLabel.className='red';}
+  teamLabel.textContent='You are on the BLUE side';
+  teamLabel.className='blue';
 }
-function sideFromLat(lat){return(lat>DIVIDING_LAT)?'blue':'red';}
-function showCrossNotify(side,latlng){
+
+function sideFromLat(lat){
+  return lat > DIVIDING_LAT ? 'blue' : 'red';
+}
+
+function showCrossNotify(side, latlng){
   const now=Date.now(); if(now-lastNotifyAt<3000) return; lastNotifyAt=now;
-  notifySide.textContent=(side==='blue')?'BLUE':'RED';
+  notifySide.textContent = (side==='blue')?'BLUE': (side==='red')?'RED':'OUT OF BOUNDS';
   notify.style.display='block'; setTimeout(()=>{notify.style.display='none';},2500);
   beep.currentTime=0; beep.play().catch(()=>{});
   if('vibrate' in navigator) navigator.vibrate([150,80,150]);
-  L.popup({autoClose:true,closeButton:false,closeOnClick:false,offset:[0,-10]})
-    .setLatLng(latlng).setContent(`<b>Now on ${side.toUpperCase()} side</b>`).openOn(map);
+  L.popup({autoClose:true, closeButton:false, closeOnClick:false, offset:[0,-10]})
+    .setLatLng(latlng).setContent(`<b>Now on ${notifySide.textContent}</b>`).openOn(map);
   setTimeout(()=>map.closePopup(),2000);
 }
-function updatePosition(lat,lng,accuracy){
+
+function updatePosition(lat, lng, accuracy){
   if(!marker){
-    marker=L.marker([lat,lng]).addTo(map);
-    accuracyCircle=L.circle([lat,lng],{radius:accuracy||20,opacity:0.35}).addTo(map);
+    marker = L.marker([lat, lng]).addTo(map);
+    accuracyCircle = L.circle([lat, lng], {radius:accuracy||20, opacity:0.35}).addTo(map);
   } else {
-    marker.setLatLng([lat,lng]);
-    accuracyCircle.setLatLng([lat,lng]).setRadius(accuracy);
+    marker.setLatLng([lat, lng]);
+    accuracyCircle.setLatLng([lat, lng]).setRadius(accuracy);
   }
-  const side=sideFromLat(lat);
-  setTeamUI(side==='blue');
-  statusEl.textContent=`Lat ${lat.toFixed(5)}, Lon ${lng.toFixed(5)} · ±${Math.round(accuracy)}m`;
-  if(lastSide && lastSide!==side) showCrossNotify(side,[lat,lng]);
-  lastSide=side;
+
+  let currentSide;
+  if(lat > OUT_OF_BOUNDS_LAT){
+    currentSide = 'out';
+    teamLabel.textContent = 'You are OUT OF BOUNDS';
+    teamLabel.className = 'gray';
+  } else {
+    currentSide = sideFromLat(lat);
+    teamLabel.textContent = currentSide==='blue' ? 'You are on the BLUE side' : 'You are on the RED side';
+    teamLabel.className = currentSide==='blue' ? 'blue' : 'red';
+  }
+
+  statusEl.textContent = `Lat ${lat.toFixed(5)}, Lon ${lng.toFixed(5)} · ±${Math.round(accuracy)}m`;
+
+  if(lastSide && lastSide !== currentSide){
+    showCrossNotify(currentSide, [lat,lng]);
+  }
+  lastSide = currentSide;
 }
 
 if('geolocation' in navigator){
   navigator.geolocation.watchPosition(
-    pos=>updatePosition(pos.coords.latitude,pos.coords.longitude,pos.coords.accuracy),
-    err=>statusEl.textContent='Location error: '+err.message,
-    {enableHighAccuracy:true,maximumAge:1000,timeout:10000}
+    pos => updatePosition(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy),
+    err => statusEl.textContent='Location error: '+err.message,
+    {enableHighAccuracy:true, maximumAge:1000, timeout:10000}
   );
 }
 
-// -------- Load local GeoJSON --------
+// -------- Load local GeoJSON and add blue/red + gray shading --------
 fetch('bainbridge.geojson')
   .then(res=>res.json())
   .then(geojson=>{
-    const islandBounds=L.geoJSON(geojson).getBounds();
-    map.fitBounds(islandBounds,{padding:[20,20]});
-    addTeamShading(geojson);
-  })
-  .catch(err=>console.error('Error loading GeoJSON:',err));
+    const islandBounds = L.geoJSON(geojson).getBounds();
+    map.fitBounds(islandBounds, {padding:[20,20]});
 
-function addTeamShading(geojson){
-  const line=turf.lineString([[-123,DIVIDING_LAT],[-122,DIVIDING_LAT]]);
-  geojson.features.forEach(f=>{
-    const split=turf.lineSplit(f,line);
-    split.features.forEach(p=>{
-      const centroid=turf.centroid(p);
-      const lat=centroid.geometry.coordinates[1];
-      const isNorth=lat>DIVIDING_LAT;
-      L.geoJSON(p,{
-        style:{
-          color:isNorth?'#0b69ff':'#dc3b3b',
-          fillColor:isNorth?'#0b69ff':'#dc3b3b',
-          fillOpacity:0.15,
-          weight:0
-        }
-      }).addTo(map);
+    // Add red/blue sides
+    geojson.features.forEach(f=>{
+      const split = turf.lineSplit(f, turf.lineString([[-123,DIVIDING_LAT],[-122,DIVIDING_LAT]]));
+      split.features.forEach(p=>{
+        const centroid = turf.centroid(p);
+        const lat = centroid.geometry.coordinates[1];
+        const isNorth = lat > DIVIDING_LAT && lat <= OUT_OF_BOUNDS_LAT;
+        L.geoJSON(p, {
+          style:{
+            color: isNorth ? '#0b69ff' : '#dc3b3b',
+            fillColor: isNorth ? '#0b69ff' : '#dc3b3b',
+            fillOpacity: 0.15,
+            weight: 0
+          }
+        }).addTo(map);
+      });
     });
-  });
-}
-</script>
-</body>
-</html>
 
+    // Add gray shading for out-of-bounds area
+    geojson.features.forEach(f=>{
+      const split = turf.lineSplit(f, turf.lineString([[-123,OUT_OF_BOUNDS_LAT],[-122,OUT_OF_BOUNDS_LAT]]));
+      split.features.forEach(p=>{
+        const centroid = turf.centroid(p);
+        const lat = centroid.geometry.coordinates[1];
+        if(lat > OUT_OF_BOUNDS_LAT){
+          L.geoJSON(p, {
+            style:{
+              fillColor:'#999',
+              fillOpacity:0.2,
+              weight:0
+            }
+          }).addTo(map);
+        }
+      });
+    });
+
+  })
+  .catch(err=>console.error('Error loading GeoJSON:', err));
+</script>
