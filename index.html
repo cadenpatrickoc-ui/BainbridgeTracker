@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Bainbridge CTF — Lobby + Map</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+
+    <style>
+      :root{
+        --blue:#0b69ff;
+        --red:#dc3b3b;
+        --gray:#666;
+      }
+      *{box-sizing:border-box}
+      html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial}
+      #app{height:100%}
+      /* Shared topbar used on map phase */
+      #topbar{
+        position:absolute; top:10px; left:50%; transform:translateX(-50%);
+        background:rgba(255,255,255,0.95); border-radius:12px; padding:10px 16px;
+        font-size:15px; box-shadow:0 4px 12px rgba(0,0,0,.15);
+        display:flex; gap:12px; align-items:center; z-index:1000;
+      }
+      #firebaseStatus{font-size:13px;color:#333;opacity:1;transition:opacity 1s ease}
+      #firebaseStatus.hide{opacity:0}
+      #teamLabel{padding:6px 10px;border-radius:6px;font-weight:700;color:#fff}
+      .blue{background:var(--blue)} .red{background:var(--red)} .gray{background:var(--gray)}
+
+      /* Map + notify */
+      #map{position:absolute; inset:0}
+      .notify{
+        position:absolute; bottom:30px; left:50%; transform:translateX(-50%);
+        background:rgba(0,0,0,.8); color:#fff; padding:10px 14px; border-radius:8px;
+        font-weight:600; opacity:0; pointer-events:none; transition:opacity .4s, transform .4s;
+        z-index:1000;
+      }
+      .notify.show{opacity:1; transform:translate(-50%,-10px)}
+
+      /* LOBBY */
+      #lobby{
+        height:100%; display:flex; align-items:center; justify-content:center;
+        background:linear-gradient(180deg,#f7f9fc,#eef2f7);
+        padding:20px;
+      }
+      .card{
+        width:min(960px,100%); background:#fff; border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.08);
+        padding:18px;
+      }
+      .row{display:grid; grid-template-columns:1fr; gap:16px}
+      @media(min-width:800px){ .row{grid-template-columns:1.2fr .8fr} }
+
+      .section{padding:14px 16px; border:1px solid #eaecef; border-radius:12px}
+      h1{margin:0 0 10px 0; font-size:20px}
+      h2{margin:0 0 8px 0; font-size:16px; color:#333}
+
+      .nameBox{display:flex; gap:10px}
+      .nameBox input{
+        flex:1; padding:10px 12px; border-radius:10px; border:1px solid #d5d8dd; font-size:15px
+      }
+      .btn{
+        border:0; padding:10px 12px; border-radius:10px; font-weight:700; cursor:pointer;
+        background:#111; color:#fff
+      }
+      .btn.secondary{background:#f3f4f6; color:#111}
+      .btn.blue{background:var(--blue)} .btn.red{background:var(--red)}
+      .btn:disabled{opacity:.5; cursor:not-allowed}
+
+      .teams{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+      .teamPanel{border:1px solid #e9ecf1; border-radius:12px; overflow:hidden}
+      .teamHead{display:flex; align-items:center; justify-content:space-between; padding:10px 12px; color:#fff}
+      .teamHead.blue{background:var(--blue)} .teamHead.red{background:var(--red)}
+      .teamList{padding:8px 12px; min-height:120px}
+      .player{display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px dashed #eee}
+      .player:last-child{border-bottom:0}
+      .check{color:#1a7f37}
+      .you{font-size:12px; color:#555; margin-left:6px}
+
+      .actions{display:flex; gap:8px; flex-wrap:wrap}
+      .meta{font-size:13px; color:#444}
+
+      .readyBar{margin-top:10px; background:#f1f3f6; border-radius:10px; overflow:hidden; height:10px}
+      .readyFill{background:#16a34a; height:100%; width:0%}
+
+      .countdown{
+        position:fixed; inset:0; display:none; align-items:center; justify-content:center;
+        background:rgba(0,0,0,.65); color:#fff; font-size:64px; font-weight:800; z-index:2000
+      }
+      .countdown.show{display:flex}
+      .hidden{display:none !important}
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <!-- LOBBY -->
+      <div id="lobby">
+        <div class="card">
+          <div class="row">
+            <div class="section">
+              <h1>Join the Game</h1>
+              <div id="nameArea" class="nameBox">
+                <input id="playerNameInput" placeholder="Enter your name and press Enter…" maxlength="24"/>
+                <button id="saveNameBtn" class="btn">Save</button>
+              </div>
+              <div id="afterName" class="hidden">
+                <div class="actions" style="margin:10px 0">
+                  <button id="joinBlue" class="btn blue">Join Blue Team</button>
+                  <button id="joinRed" class="btn red">Join Red Team</button>
+                  <button id="readyBtn" class="btn secondary" disabled>Ready</button>
+                  <button id="unreadyBtn" class="btn secondary hidden">Unready</button>
+                </div>
+                <div class="meta" id="youMeta">You haven’t joined a team yet.</div>
+              </div>
+            </div>
+
+            <div class="section">
+              <h2>Game Status</h2>
+              <div class="meta" id="statusLine">Waiting for players…</div>
+              <div class="readyBar"><div id="readyFill" class="readyFill"></div></div>
+              <div class="actions" style="margin-top:10px">
+                <button id="startBtn" class="btn" disabled>Start Game</button>
+                <div class="meta" id="startCount">(0/0 players started)</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="section" style="margin-top:12px">
+            <div class="teams">
+              <div class="teamPanel">
+                <div class="teamHead blue">
+                  <div>Blue Team</div>
+                  <div id="blueCount">0</div>
+                </div>
+                <div id="blueList" class="teamList"></div>
+              </div>
+              <div class="teamPanel">
+                <div class="teamHead red">
+                  <div>Red Team</div>
+                  <div id="redCount">0</div>
+                </div>
+                <div id="redList" class="teamList"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- COUNTDOWN overlay -->
+      <div id="countdown" class="countdown">3</div>
+
+      <!-- MAP PHASE -->
+      <div id="mapPhase" class="hidden">
+        <div id="topbar">
+          <span id="firebaseStatus">⏳ Connecting...</span>
+          <span id="teamLabel" class="blue">Waiting for location…</span>
+        </div>
+        <div id="notify" class="notify">Crossed line</div>
+        <div id="map"></div>
+      </div>
+    </div>
+
+    <!-- Firebase (modular) -->
+    <script type="module">
+      import { initializeApp } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-app.js";
+      import {
+        getDatabase, ref, onValue, set, update, remove, onDisconnect, serverTimestamp
+      } from "https://www.gstatic.com/firebasejs/12.3.0/firebase-database.js";
+
+      // --- Your Firebase project config ---
+      const firebaseConfig = {
+        apiKey: "AIzaSyD6hkngzSukEdESjhq5KXrSxmc2UjoZLU0",
+        authDomain: "bainbridge-ctf.firebaseapp.com",
+        projectId: "bainbridge-ctf",
+        storageBucket: "bainbridge-ctf.firebasestorage.app",
+        messagingSenderId: "627748791933",
+        appId: "1:627748791933:web:3c31d762cbaecb7effb314"
+      };
+
+      const app = initializeApp(firebaseConfig);
+      const db = getDatabase(app);
+
+      // Fade out firebase status in map phase when shown
+      function showFirebaseOkOnce(){
+        const el = document.getElementById("firebaseStatus");
+        if(!el) return;
+        el.textContent = "✅ Firebase Connected!";
+        setTimeout(()=>{ el.classList.add("hide"); setTimeout(()=>el.remove(), 1000); }, 2500);
+      }
+      showFirebaseOkOnce();
+
+      // --- Game constants ---
+      const GAME_ID = "default"; // single game room
+      const gameRef = ref(db, `games/${GAME_ID}`);
+      const playersRef = ref(db, `games/${GAME_ID}/players`);
+      const stateRef = ref(db, `games/${GAME_ID}/state`);
+
+      // --- Local identity ---
+      let playerId = localStorage.getItem("ctf_player_id");
+      if(!playerId){
+        playerId = "p_" + Math.random().toString(36).slice(2,10);
+        localStorage.setItem("ctf_player_id", playerId);
+      }
+
+      // Presence: remove player on disconnect (so lists stay clean)
+      onDisconnect(ref(db, `games/${GAME_ID}/players/${playerId}`)).remove();
+
+      // --- UI refs (lobby) ---
+      const lobby = document.getElementById("lobby");
+      const afterName = document.getElementById("afterName");
+      const nameInput = document.getElementById("playerNameInput");
+      const saveNameBtn = document.getElementById("saveNameBtn");
+      const joinBlueBtn = document.getElementById("joinBlue");
+      const joinRedBtn  = document.getElementById("joinRed");
+      const readyBtn    = document.getElementById("readyBtn");
+      const unreadyBtn  = document.getElementById("unreadyBtn");
+      const youMeta     = document.getElementById("youMeta");
+      const blueList    = document.getElementById("blueList");
+      const redList     = document.getElementById("redList");
+      const blueCount   = document.getElementById("blueCount");
+      const redCount    = document.getElementById("redCount");
+      const statusLine  = document.getElementById("statusLine");
+      const readyFill   = document.getElementById("readyFill");
+      const startBtn    = document.getElementById("startBtn");
+      const startCount  = document.getElementById("startCount");
+      const countdownEl = document.getElementById("countdown");
+
+      const mapPhase    = document.getElementById("mapPhase");
+
+      // Save name -> create/update player record
+      async function ensurePlayer(nameIfAny){
+        const name = nameIfAny ?? nameInput.value.trim();
+        if(!name) return;
+        await set(ref(db, `games/${GAME_ID}/players/${playerId}`), {
+          name, team: null, ready: false, started: false, ts: serverTimestamp()
+        });
+        afterName.classList.remove("hidden");
+        nameInput.disabled = true; saveNameBtn.disabled = true;
+      }
+
+      saveNameBtn.onclick = ()=>ensurePlayer();
+      nameInput.addEventListener("keydown", e=>{
+        if(e.key==="Enter") ensurePlayer();
+      });
+
+      joinBlueBtn.onclick = ()=> update(ref(db, `games/${GAME_ID}/players/${playerId}`), { team:"blue" });
+      joinRedBtn.onclick  = ()=> update(ref(db, `games/${GAME_ID}/players/${playerId}`), { team:"red" });
+
+      readyBtn.onclick = ()=> update(ref(db, `games/${GAME_ID}/players/${playerId}`), { ready:true });
+      unreadyBtn.onclick = ()=> update(ref(db, `games/${GAME_ID}/players/${playerId}`), { ready:false, started:false });
+
+      startBtn.onclick = ()=> update(ref(db, `games/${GAME_ID}/players/${playerId}`), { started:true });
+
+      // Render team lists, readiness, start availability
+      onValue(playersRef, snap=>{
+        const players = snap.val() || {};
+        // If we already created ourselves earlier (reopen page), show post-name UI
+        if(players[playerId]?.name){ afterName.classList.remove("hidden"); nameInput.disabled=true; saveNameBtn.disabled=true; }
+
+        let total=0, ready=0, started=0;
+        let blue=[], red=[];
+        Object.entries(players).forEach(([id,p])=>{
+          total++;
+          if(p.ready) ready++;
+          if(p.started) started++;
+          if(p.team==="blue") blue.push({id,...p});
+          else if(p.team==="red") red.push({id,...p});
+        });
+
+        // Build list UIs
+        function renderList(container, list, color){
+          container.innerHTML="";
+          list.forEach(p=>{
+            const row = document.createElement("div"); row.className="player";
+            const check = p.ready ? "✅" : "";
+            const me = p.id===playerId ? '<span class="you">(you)</span>' : '';
+            row.innerHTML = `<span class="check">${check}</span><span>${p.name}</span> ${me}`;
+            container.appendChild(row);
+          });
+        }
+        renderList(blueList, blue, "blue");
+        renderList(redList,  red,  "red");
+        blueCount.textContent = blue.length;
+        redCount.textContent  = red.length;
+
+        // Update my action buttons
+        const me = players[playerId];
+        if(me){
+          const onTeam = !!me.team;
+          youMeta.textContent = me.team
+            ? `You are on the ${me.team.toUpperCase()} team${me.ready ? " and READY." : "."}`
+            : "You haven’t joined a team yet.";
+
+          joinBlueBtn.disabled = me.ready || me.team==="blue";
+          joinRedBtn.disabled  = me.ready || me.team==="red";
+          readyBtn.disabled    = !onTeam || me.ready;
+          readyBtn.classList.toggle("hidden", !!me.ready);
+          unreadyBtn.classList.toggle("hidden", !me.ready);
+        }
+
+        // Progress bar for "ready"
+        const pct = total>0 ? Math.round((ready/total)*100) : 0;
+        readyFill.style.width = pct+"%";
+
+        // Status line and start gating:
+        const eachTeamHasOneReady = (blue.some(p=>p.ready) && red.some(p=>p.ready));
+        const allReady = (ready===total && total>0);
+        statusLine.textContent = allReady
+          ? "All players are READY. Waiting for everyone to press Start."
+          : `Players ready: ${ready}/${total}` + (eachTeamHasOneReady ? " — both teams have at least one ready player." : " — waiting for at least one ready per team.");
+
+        // Enable Start when: all ready AND both teams have at least one player
+        const teamsNonEmpty = blue.length>0 && red.length>0;
+        startBtn.disabled = !(allReady && teamsNonEmpty);
+
+        // Start count
+        startCount.textContent = `(${started}/${total} players started)`;
+
+        // If everyone pressed Start -> move to countdown (set phase if not set)
+        if(total>0 && started===total){
+          update(stateRef, { phase: "countdown", t: serverTimestamp() });
+        }
+      });
+
+      // Game state: lobby | countdown | in_progress
+      onValue(stateRef, snap=>{
+        const st = snap.val() || {};
+        const phase = st.phase || "lobby";
+        if(phase==="lobby"){
+          lobby.classList.remove("hidden");
+          mapPhase.classList.add("hidden");
+          document.getElementById("countdown").classList.remove("show");
+        } else if(phase==="countdown"){
+          lobby.classList.remove("hidden");
+          mapPhase.classList.add("hidden");
+          runCountdownThenStart();
+        } else if(phase==="in_progress"){
+          lobby.classList.add("hidden");
+          mapPhase.classList.remove("hidden");
+        }
+      });
+
+      // Countdown (client-side; any client seeing countdown runs it once)
+      let countdownRunning = false;
+      function runCountdownThenStart(){
+        if(countdownRunning) return;
+        countdownRunning = true;
+        const cd = countdownEl;
+        let n=3;
+        cd.textContent = n; cd.classList.add("show");
+        const iv = setInterval(()=>{
+          n--; cd.textContent = n;
+          if(n<=0){
+            clearInterval(iv);
+            cd.classList.remove("show");
+            update(stateRef, { phase:"in_progress", t: serverTimestamp() });
+          }
+        },1000);
+      }
+
+      // If no state yet, initialize to lobby
+      onValue(stateRef, snap=>{
+        if(!snap.exists()){
+          set(stateRef, { phase:"lobby", t: serverTimestamp() });
+        }
+      });
+
+      // Try to prefill name if we saved before
+      const storedName = localStorage.getItem("ctf_player_name") || "";
+      if(storedName){
+        nameInput.value = storedName;
+        // ensure our record exists
+        ensurePlayer(storedName);
+      }
+      saveNameBtn.addEventListener("click", ()=>{
+        const n = nameInput.value.trim();
+        if(n) localStorage.setItem("ctf_player_name", n);
+      });
+      nameInput.addEventListener("keydown", e=>{
+        if(e.key==="Enter"){
+          const n = nameInput.value.trim();
+          if(n) localStorage.setItem("ctf_player_name", n);
+        }
+      });
+    </script>
+
+    <!-- Leaflet & Turf -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+
+    <!-- Sounds for map notifications -->
+    <audio id="beep" preload="auto">
+      <source src="https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg" type="audio/ogg">
+    </audio>
+
+    <!-- MAP logic (only visible in in_progress phase) -->
+    <script>
+      const DIVIDING_LAT = 47.629536;
+      const OUT_OF_BOUNDS_LAT = 47.6796281;
+
+      const map = L.map("map");
+      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+      }).addTo(map);
+
+      // Lines
+      L.polyline([[DIVIDING_LAT,-180],[DIVIDING_LAT,180]],{color:"#222",weight:3,dashArray:"8 6"}).addTo(map);
+      L.polyline([[OUT_OF_BOUNDS_LAT,-180],[OUT_OF_BOUNDS_LAT,180]],{color:"#555",weight:2,dashArray:"6 4"}).addTo(map);
+
+      const teamLabel = document.getElementById("teamLabel");
+      const notify = document.getElementById("notify");
+      const beep = document.getElementById("beep");
+      let marker=null, accuracyCircle=null, lastSide=null, lastNotifyAt=0;
+
+      const blueIcon = L.icon({ iconUrl:"https://maps.gstatic.com/mapfiles/ms2/micons/blue-dot.png", iconSize:[24,24], iconAnchor:[12,12] });
+      const redIcon  = L.icon({ iconUrl:"https://maps.gstatic.com/mapfiles/ms2/micons/red-dot.png",  iconSize:[24,24], iconAnchor:[12,12] });
+      const grayIcon = L.icon({ iconUrl:"https://maps.gstatic.com/mapfiles/ms2/micons/ltblue-dot.png",iconSize:[24,24], iconAnchor:[12,12] });
+
+      function showCrossNotify(side){
+        const now=Date.now(); if(now-lastNotifyAt<3000) return; lastNotifyAt=now;
+        notify.textContent = side==="out" ? "Now OUT OF BOUNDS" : `Now on ${side.toUpperCase()} side`;
+        notify.classList.add("show"); setTimeout(()=>notify.classList.remove("show"),2500);
+        beep.currentTime=0; beep.play().catch(()=>{});
+        if("vibrate" in navigator) navigator.vibrate([150,80,150]);
+      }
+      function sideFromLat(lat){ return lat > DIVIDING_LAT ? "blue" : "red"; }
+
+      function updatePosition(lat,lng,accuracy){
+        let currentSide;
+        if(lat > OUT_OF_BOUNDS_LAT){
+          currentSide="out"; teamLabel.textContent="OUT OF BOUNDS"; teamLabel.className="gray";
+        } else {
+          currentSide=sideFromLat(lat);
+          teamLabel.textContent=currentSide==="blue" ? "BLUE side" : "RED side";
+          teamLabel.className=currentSide;
+        }
+        const icon = currentSide==="blue"?blueIcon: currentSide==="red"?redIcon: grayIcon;
+
+        if(!marker){
+          marker=L.marker([lat,lng],{icon}).addTo(map);
+          accuracyCircle=L.circle([lat,lng],{radius:accuracy||20,opacity:.35}).addTo(map);
+          // Don't jump if we already fit to island later; view will be set after GeoJSON loads
+        }else{
+          marker.setLatLng([lat,lng]); marker.setIcon(icon);
+          accuracyCircle.setLatLng([lat,lng]).setRadius(accuracy);
+        }
+        if(lastSide && lastSide!==currentSide) showCrossNotify(currentSide);
+        lastSide=currentSide;
+      }
+
+      if("geolocation" in navigator){
+        navigator.geolocation.watchPosition(
+          pos=>updatePosition(pos.coords.latitude,pos.coords.longitude,pos.coords.accuracy),
+          err=>console.error("Location error:",err),
+          {enableHighAccuracy:true,maximumAge:1000,timeout:10000}
+        );
+      }
+
+      // Load island & apply shading
+      fetch("bainbridge.geojson").then(r=>r.json()).then(geojson=>{
+        const islandBounds = L.geoJSON(geojson).getBounds();
+        map.fitBounds(islandBounds,{padding:[20,20]});
+
+        // Blue/Red halves
+        geojson.features.forEach(f=>{
+          const split = turf.lineSplit(f, turf.lineString([[-123,DIVIDING_LAT],[-122,DIVIDING_LAT]]));
+          split.features.forEach(p=>{
+            const c = turf.centroid(p).geometry.coordinates;
+            const isNorth = c[1] > DIVIDING_LAT && c[1] <= OUT_OF_BOUNDS_LAT;
+            L.geoJSON(p,{style:{
+              color:isNorth? "#0b69ff":"#dc3b3b",
+              fillColor:isNorth? "#0b69ff":"#dc3b3b",
+              fillOpacity:.15, weight:0
+            }}).addTo(map);
+          });
+        });
+
+        // Out-of-bounds (north of Day Rd W)
+        geojson.features.forEach(f=>{
+          const split = turf.lineSplit(f, turf.lineString([[-123,OUT_OF_BOUNDS_LAT],[-122,OUT_OF_BOUNDS_LAT]]));
+          split.features.forEach(p=>{
+            const c = turf.centroid(p).geometry.coordinates;
+            if(c[1] > OUT_OF_BOUNDS_LAT){
+              L.geoJSON(p,{style:{fillColor:"#999", fillOpacity:.25, weight:0}}).addTo(map);
+            }
+          });
+        });
+      }).catch(e=>console.error("Error loading GeoJSON:",e));
+    </script>
+  </body>
+</html>
